@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/bash
+. "$(dirname "$(readlink -f "$0")")/_common"
+export LD_LIBRARY_PATH="$RE_ROOT/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$RE_ROOT/android-tools/aapt" "$@"

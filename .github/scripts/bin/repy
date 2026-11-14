@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 用本工具集内置的 Python 库跑脚本
+. "$(dirname "$(readlink -f "$0")")/_common"
+export PYTHONPATH="$RE_ROOT/pymods${PYTHONPATH:+:$PYTHONPATH}"
+export LD_LIBRARY_PATH="$RE_ROOT/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$RE_ROOT/radare2/bin:$PATH"
+exec python3 "$@"

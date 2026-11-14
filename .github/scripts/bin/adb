@@ -1,0 +1,3 @@
+#!/data/data/com.termux/files/usr/bin/bash
+. "$(dirname "$(readlink -f "$0")")/_common"
+exec "$RE_ROOT/android-tools/adb" "$@"

@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/bash
+. "$(dirname "$(readlink -f "$0")")/_common"
+JAR=$(ls "$RE_ROOT"/jadx/lib/jadx-*-all.jar 2>/dev/null | head -1)
+[ -n "$JAR" ] || { echo "jadx: 找不到 jar，安装可能不完整" >&2; exit 1; }
+exec java -Xmx1500m -cp "$JAR" jadx.cli.JadxCLI "$@"

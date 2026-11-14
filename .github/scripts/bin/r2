@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/bash
+. "$(dirname "$(readlink -f "$0")")/_common"
+export LD_LIBRARY_PATH="$RE_ROOT/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export R2_LIBR_PLUGINS="$RE_ROOT/radare2/plugins${R2_LIBR_PLUGINS:+:$R2_LIBR_PLUGINS}"
+exec "$RE_ROOT/radare2/bin/r2" "$@"

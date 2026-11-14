@@ -1,0 +1,422 @@
+name: build re-tools
+
+# 从零构建完整的逆向工具集，产出 Termux (Android arm64) 可直接使用的压缩包。
+#
+# 策略：能下载的直接下载，需要构建的才构建，已构建过的直接下现成的。
+#
+# 产物布局：
+#   re-tools/
+#   ├── bin/             命令入口（9 个）
+#   ├── jadx/            dex → Java
+#   ├── pymods/          Python 库
+#   ├── radare2/         二进制分析（含 r2dec）
+#   ├── android-tools/   aapt/zipalign/adb
+#   └── apktool.jar      资源反编译
+#
+# 远端脚本放在 .github/scripts/ 下，不内联进 YAML ——
+# 内联的 heredoc 缩进会破坏 YAML 结构（实测踩过）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: '目标 Python 版本（须与 Termux 一致）'
+        required: false
+        default: '3.14'
+      android_api:
+        description: '最低 Android API'
+        required: false
+        default: '24'
+      ndk_version:
+        description: 'NDK 版本'
+        required: false
+        default: '29.0.0'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.14' }}
+  ANDROID_API: ${{ github.event.inputs.android_api || '24' }}
+  NDK_VERSION: ${{ github.event.inputs.ndk_version || '29.0.0' }}
+  # Termux 仓库索引
+  TERMUX_PKGS_URL: https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz
+  TERMUX_POOL: https://packages.termux.dev/apt/termux-main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          set -euo pipefail
+          nproc
+          free -m | head -2
+          df -h / | tail -1
+          echo "目标: Python $PYTHON_VERSION / API $ANDROID_API / NDK $NDK_VERSION"
+
+      - name: 安装构建工具
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ninja-build cmake zip unzip curl file pkg-config
+
+      - name: 安装 NDK
+        run: |
+          set -euo pipefail
+          MAJOR="${NDK_VERSION%%.*}"
+          curl -fsSL -o /tmp/ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-r${MAJOR}-linux.zip"
+          mkdir -p "$RUNNER_TEMP/ndk"
+          unzip -q /tmp/ndk.zip -d "$RUNNER_TEMP/ndk"
+          NDK_DIR=$(find "$RUNNER_TEMP/ndk" -maxdepth 1 -type d -name 'android-ndk-*' | head -1)
+          test -d "$NDK_DIR" || { echo "✗ NDK 解压失败"; exit 1; }
+          echo "NDK_DIR=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "✓ NDK: $NDK_DIR"
+
+      - name: 拉取 Termux 包索引
+        run: |
+          set -euo pipefail
+          curl -fsSL "$TERMUX_PKGS_URL" | gunzip > /tmp/Packages
+          echo "索引条目数: $(grep -c '^Package: ' /tmp/Packages)"
+
+      # ── 目标平台 Python 头文件 ──────────────────────────────────
+      # C 扩展交叉编译必须用目标平台的 pyconfig.h。
+      # runner 的 x86_64 版里 SIZEOF_LONG 等宏按 x86_64 生成，
+      # 用错编出的模块结构体布局不对，真机 import 直接崩。
+      - name: 取 Termux 的 Python 头文件
+        run: |
+          set -euo pipefail
+          FILE=$(grep -A20 '^Package: python$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
+          test -n "$FILE" || { echo "✗ 索引里找不到 python 包"; exit 1; }
+          echo "python deb: $FILE"
+          curl -fsSL -o /tmp/py.deb "$TERMUX_POOL/$FILE"
+          ls -lh /tmp/py.deb
+          python3 .github/scripts/extract-deb.py /tmp/py.deb "$RUNNER_TEMP/pyext"
+          PYINC=$(find "$RUNNER_TEMP/pyext" -type d -name "python${PYTHON_VERSION}" | head -1)
+          test -n "$PYINC" || { echo "✗ 找不到 python${PYTHON_VERSION} 头文件"; find "$RUNNER_TEMP/pyext" -name pyconfig.h; exit 1; }
+          echo "Python include: $PYINC"
+          grep -E '^#define (SIZEOF_LONG|SIZEOF_VOID_P) ' "$PYINC/pyconfig.h" | sed 's/^/  /'
+          for k in SIZEOF_LONG SIZEOF_VOID_P; do
+            v=$(grep -E "^#define $k " "$PYINC/pyconfig.h" | awk '{print $3}')
+            [ "$v" = "8" ] || { echo "✗ $k=$v，不是 aarch64 头文件" >&2; exit 1; }
+          done
+          echo "PYINC=$PYINC" >> "$GITHUB_ENV"
+          echo "✓ 头文件校验通过（64 位目标平台）"
+
+      - name: 准备输出目录
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/dist/re-tools"
+          mkdir -p "$OUT"/{bin,jadx,pymods,radare2/bin,radare2/lib,radare2/plugins,android-tools}
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          echo "✓ $OUT"
+
+      # ══════════════════════════════════════════════════════
+      # 一、直接下载（上游已有现成产物）
+      # ══════════════════════════════════════════════════════
+
+      - name: jadx（下载）
+        run: |
+          set -euo pipefail
+          V=1.5.6
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${V}/jadx-${V}.zip"
+          unzip -q /tmp/jadx.zip -d "$OUT/jadx"
+          test -f "$OUT/jadx/lib/jadx-${V}-all.jar" || { echo "✗ jadx jar 缺失"; ls -R "$OUT/jadx" | head; exit 1; }
+          echo "✓ jadx $V ($(du -h "$OUT/jadx/lib/jadx-${V}-all.jar" | cut -f1))"
+
+      - name: apktool（下载）
+        run: |
+          set -euo pipefail
+          V=3.0.3
+          curl -fsSL -o "$OUT/apktool.jar" \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${V}/apktool_${V}.jar"
+          test -s "$OUT/apktool.jar" || { echo "✗ apktool.jar 下载失败"; exit 1; }
+          echo "✓ apktool $V ($(du -h "$OUT/apktool.jar" | cut -f1))"
+
+      - name: radare2（下载 Termux 原生包）
+        run: |
+          set -euo pipefail
+          # 不从源码编：radare2 含 23 个 so + 数据文件，
+          # 交叉编译耗时长且依赖复杂。Termux 官方包是 aarch64 且已验证。
+          FILE=$(grep -A20 '^Package: radare2$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
+          VER=$(grep -A20 '^Package: radare2$' /tmp/Packages | grep '^Version:' | head -1 | awk '{print $2}')
+          test -n "$FILE" || { echo "✗ 索引里找不到 radare2"; exit 1; }
+          echo "radare2 $VER ($FILE)"
+          curl -fsSL -o /tmp/r2.deb "$TERMUX_POOL/$FILE"
+          python3 .github/scripts/extract-deb.py /tmp/r2.deb /tmp/r2ext
+          USR=$(find /tmp/r2ext -type d -path '*com.termux/files/usr' | head -1)
+          test -n "$USR" || { echo "✗ 解包失败"; find /tmp/r2ext -maxdepth 5 -type d | head; exit 1; }
+          for b in r2 radare2 rabin2 rax2 rasm2 r2pm; do
+            [ -f "$USR/bin/$b" ] && cp -a "$USR/bin/$b" "$OUT/radare2/bin/"
+          done
+          cp -a "$USR"/lib/libr_*.so* "$OUT/radare2/lib/" 2>/dev/null || true
+          [ -d "$USR/share/radare2" ] && cp -a "$USR/share/radare2" "$OUT/radare2/share/"
+          echo "  可执行: $(ls "$OUT/radare2/bin" | tr '\n' ' ')"
+          echo "  库文件: $(ls "$OUT/radare2/lib" | wc -l) 个"
+          echo "✓ radare2 $VER ($(du -sh "$OUT/radare2" | cut -f1))"
+
+      - name: android-tools（下载 Termux 原生包）
+        run: |
+          set -euo pipefail
+          FILE=$(grep -A20 '^Package: android-tools$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
+          test -n "$FILE" || { echo "✗ 索引里找不到 android-tools"; exit 1; }
+          curl -fsSL -o /tmp/at.deb "$TERMUX_POOL/$FILE"
+          python3 .github/scripts/extract-deb.py /tmp/at.deb /tmp/atext
+          USR=$(find /tmp/atext -type d -path '*com.termux/files/usr' | head -1)
+          test -n "$USR" || { echo "✗ 解包失败"; exit 1; }
+          for b in aapt aapt2 zipalign adb dexdump; do
+            if [ -f "$USR/bin/$b" ]; then
+              cp "$USR/bin/$b" "$OUT/android-tools/"
+              echo "  + $b"
+            fi
+          done
+          # aapt/aapt2 依赖 libc++_shared.so
+          cp -a "$USR"/lib/libc++_shared.so* "$OUT/android-tools/" 2>/dev/null || true
+          echo "✓ android-tools ($(du -sh "$OUT/android-tools" | cut -f1))"
+
+      # ══════════════════════════════════════════════════════
+      # 二、Python 库
+      # ══════════════════════════════════════════════════════
+
+      - name: 纯 Python 库（直接下载）
+        run: |
+          set -euo pipefail
+          # 无 C 扩展，任何平台都能用，直接 pip 装
+          PURE="androguard r2pipe pyelftools pyyaml networkx pydot asn1crypto click colorama loguru pyasn1 future past apkInspector apkInspectorCLI"
+          FAILED=""
+          for p in $PURE; do
+              if python3 -m pip install --target "$OUT/pymods" --no-deps \
+                     --only-binary :all: --no-cache-dir -q "$p" 2>/dev/null; then
+                  echo "  ✓ $p"
+              else
+                  echo "  ✗ $p"
+                  FAILED="$FAILED $p"
+              fi
+          done
+          [ -z "$FAILED" ] || { echo "✗ 以下纯 Python 库下载失败:$FAILED" >&2; exit 1; }
+          echo "✓ 共 $(ls "$OUT/pymods" | wc -l) 个条目"
+
+      - name: 设置交叉编译环境
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64"
+          CC="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang"
+          CXX="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang++"
+          AR="$TOOLCHAIN/bin/llvm-ar"
+          SYSROOT="$TOOLCHAIN/sysroot"
+          test -x "$CC" || { echo "✗ 找不到交叉编译器: $CC"; exit 1; }
+          {
+            echo "_PYTHON_HOST_PLATFORM=linux-aarch64"
+            echo "CC=$CC"
+            echo "CXX=$CXX"
+            echo "AR=$AR"
+            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
+            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
+            echo "LDSHARED=$CC -shared"
+            echo "CFLAGS=-I$PYINC -fPIC -O2"
+            echo "CXXFLAGS=-I$PYINC -fPIC -O2"
+            echo "LDFLAGS=--sysroot=$SYSROOT -L$SYSROOT/usr/lib/aarch64-linux-android/$ANDROID_API"
+            echo "PATH=$TOOLCHAIN/bin:$PATH"
+          } >> "$GITHUB_ENV"
+          echo "✓ 交叉编译环境就绪"
+          echo "  CC=$CC"
+
+      - name: C 扩展库（交叉编译）
+        run: |
+          set -euo pipefail
+          # 这几个在 PyPI 上没有 Android wheel，必须从源码编译。
+          # 逐个来，任何一个失败立即报错——缺了就说明工具集不完整。
+          for p in unicorn capstone pycryptodome lxml; do
+              echo "════ $p ════"
+              if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
+                      --no-binary :all: --no-cache-dir "$p" 2>&1 | tail -20; then
+                  echo "✗ $p 编译失败" >&2
+                  exit 1
+              fi
+              echo "✓ $p"
+          done
+
+      - name: 检查 C 扩展架构
+        run: |
+          set -euo pipefail
+          echo "=== pymods 里的 .so ==="
+          BAD=0
+          while IFS= read -r f; do
+              if file "$f" | grep -q 'x86-64'; then
+                  echo "  ✗ $f 是 x86_64"
+                  BAD=$((BAD+1))
+              else
+                  echo "  ✓ $(basename "$f")"
+              fi
+          done < <(find "$OUT/pymods" -name '*.so' -type f)
+          if [ "$BAD" -gt 0 ]; then
+              echo "✗ 混入 $BAD 个 x86_64 的 .so" >&2
+              exit 1
+          fi
+          echo "✓ 全部是目标平台架构"
+
+      # ══════════════════════════════════════════════════════
+      # 三、两个特殊库
+      # ══════════════════════════════════════════════════════
+
+      - name: lief（下载已构建产物）
+        run: |
+          set -euo pipefail
+          # PyPI 的 lief sdist 是 mock 包（7.8KB，src/ 被剔除），
+          # 无法从 pip 构建。已有现成产物，直接下载。
+          URL="https://github.com/zzgs219G/termux-build/releases/download/v2/lief-py3.14-android-arm64.tar.gz"
+          curl -fsSL -o /tmp/lief.tar.gz "$URL" || { echo "✗ 下载失败: $URL" >&2; exit 1; }
+          tar xzf /tmp/lief.tar.gz -C /tmp
+          test -d /tmp/lief || { echo "✗ 解压后没有 lief/"; exit 1; }
+          rm -rf "$OUT/pymods/lief"
+          cp -a /tmp/lief "$OUT/pymods/lief"
+          SO=$(find "$OUT/pymods/lief" -name '_lief*.so' | head -1)
+          test -n "$SO" || { echo "✗ 找不到 _lief*.so"; ls "$OUT/pymods/lief"; exit 1; }
+          file "$SO"
+          file "$SO" | grep -qi aarch64 || { echo "✗ lief 不是 aarch64" >&2; exit 1; }
+          echo "✓ lief ($(du -sh "$OUT/pymods/lief" | cut -f1))"
+
+      - name: keystone（打补丁后交叉编译）
+        run: |
+          set -euo pipefail
+          # PyPI 的 sdist 用了已废弃的 CMP0051 策略，新版 CMake 拒绝。
+          # 补丁脚本见 .github/scripts/patch-keystone.py
+          cd /tmp
+          rm -rf ks && mkdir ks && cd ks
+          python3 -m pip download --no-deps --no-binary :all: --no-cache-dir keystone-engine
+          tar xzf keystone-engine-*.tar.gz
+          cd keystone-engine-*/
+          python3 "$GITHUB_WORKSPACE/.github/scripts/patch-keystone.py" .
+          cd src && mkdir -p build && cd build
+          cmake .. -G Ninja \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LIBS_ONLY=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLVM_TARGETS_TO_BUILD="AArch64"
+          cmake --build . -j"$(nproc)"
+          LIB=$(find . -name 'libkeystone.so*' -type f | head -1)
+          test -n "$LIB" || { echo "✗ 没产出 libkeystone.so"; find . -name '*.so*' | head; exit 1; }
+          file "$LIB"
+          file "$LIB" | grep -qi aarch64 || { echo "✗ 不是 aarch64" >&2; exit 1; }
+          cd /tmp/ks/keystone-engine-*/
+          cp -a keystone "$OUT/pymods/"
+          cp "$(find src/build -name 'libkeystone.so*' -type f | head -1)" \
+             "$OUT/pymods/keystone/libkeystone.so"
+          rm -rf "$OUT/pymods/keystone/__pycache__"
+          echo "✓ keystone ($(du -sh "$OUT/pymods/keystone" | cut -f1))"
+
+      - name: r2dec（交叉编译 r2 插件）
+        run: |
+          set -euo pipefail
+          cd /tmp
+          rm -rf r2dec && git clone --depth=1 https://github.com/wargio/r2dec-js r2dec
+          cd r2dec
+          R2INC=$(find /tmp/r2ext -type d -name libr | head -1)
+          test -n "$R2INC" || { echo "✗ 找不到 radare2 头文件（r2dec 编译需要）"; exit 1; }
+          echo "r2 include: $R2INC"
+          # r2dec 是 r2 的插件，必须用【目标平台】的 r2 头文件编译，
+          # 但 meson 需要能运行 r2 来探测版本 —— 这里直接注入路径绕过。
+          CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          meson setup b --backend=ninja \
+            --cross-file /dev/null 2>/dev/null || true
+          # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
+          if meson setup b --backend=ninja \
+               -Dc_args="-I$R2INC" \
+               -Dr2_plugdir="$OUT/radare2/plugins" 2>&1 | tail -15; then
+              ninja -C b 2>&1 | tail -10 || true
+          fi
+          SO=$(find /tmp/r2dec "$OUT/radare2/plugins" -name 'libcore_pdd*.so' 2>/dev/null | head -1)
+          if [ -n "$SO" ]; then
+              cp "$SO" "$OUT/radare2/plugins/"
+              file "$OUT/radare2/plugins/libcore_pdd.so"
+              echo "✓ r2dec"
+          else
+              echo "⚠ r2dec 编译失败（不影响其他工具，仅缺 pdd 反编译命令）"
+              echo "  这通常意味着 r2dec 与 r2 6.2.6 的 API 不兼容"
+          fi
+
+      # ══════════════════════════════════════════════════════
+      # 四、打包
+      # ══════════════════════════════════════════════════════
+
+      - name: 安装 bin 脚本
+        run: |
+          set -euo pipefail
+          cp -a "$GITHUB_WORKSPACE"/.github/scripts/bin/. "$OUT/bin/"
+          chmod +x "$OUT/bin"/*
+          echo "✓ bin 脚本: $(ls "$OUT/bin" | tr '\n' ' ')"
+
+      - name: 生成 README
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/.github/scripts/README-template.md" "$OUT/README.md"
+          # 把实际版本号填进去
+          sed -i "s/{{PYTHON_VERSION}}/$PYTHON_VERSION/g" "$OUT/README.md"
+          sed -i "s/{{BUILD_DATE}}/$(date -u +%Y-%m-%d)/g" "$OUT/README.md"
+          echo "✓ README"
+
+      - name: 汇总体积
+        run: |
+          set -euo pipefail
+          echo "=== 各组件体积 ==="
+          for d in jadx pymods radare2 android-tools bin; do
+              printf "  %-16s %8s\n" "$d" "$(du -sh "$OUT/$d" 2>/dev/null | cut -f1)"
+          done
+          [ -f "$OUT/apktool.jar" ] && printf "  %-16s %8s\n" "apktool.jar" "$(du -h "$OUT/apktool.jar" | cut -f1)"
+          printf "  %-16s %8s\n" "总计" "$(du -sh "$OUT" | cut -f1)"
+
+      - name: 打包 tar.gz
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/dist"
+          # tar.gz 保留权限位和符号链接（zip 会丢权限）
+          tar czf re-tools-arm64.tar.gz re-tools
+          ls -lh re-tools-arm64.tar.gz
+          sha256sum re-tools-arm64.tar.gz | tee re-tools-arm64.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re-tools-arm64
+          path: |
+            dist/re-tools-arm64.tar.gz
+            dist/re-tools-arm64.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: 发布到 Release（仅 tag 触发）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/re-tools-arm64.tar.gz
+            dist/re-tools-arm64.tar.gz.sha256
+          name: re-tools ${{ github.ref_name }}
+          body: |
+            Termux (Android arm64) 完整逆向工具集，由 CI 从零构建。
+
+            ## 安装
+
+            ```bash
+            tar xzf re-tools-arm64.tar.gz -C ~
+            export PATH="$HOME/re-tools/bin:$PATH"
+            export PYTHONPATH="$HOME/re-tools/pymods"
+            doctor
+            ```
+
+            外部依赖：
+
+            ```bash
+            pkg install openjdk-21 python apksigner
+            ```

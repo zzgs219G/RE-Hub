@@ -1,0 +1,109 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# doctor — 检查工具集是否完整可用
+#
+# 换手机或重装 Termux 后跑一遍，缺什么一目了然。
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/_common"
+
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad() { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n' "$*"; }
+
+echo "=== 逆向工具自检 ==="
+echo "目录: $RE_ROOT"
+echo
+
+echo "[1] 自带程序"
+for f in apktool.jar radare2/bin/r2 android-tools/aapt android-tools/zipalign; do
+    [ -e "$RE_ROOT/$f" ] && ok "$f" || bad "$f ★ 缺失"
+done
+if ls "$RE_ROOT"/jadx/lib/jadx-*-all.jar >/dev/null 2>&1; then
+    ok "jadx jar"
+else
+    bad "jadx jar ★ 缺失"
+fi
+
+echo
+echo "[2] 外部依赖（需 pkg 安装）"
+for c in java python3 apksigner; do
+    if command -v "$c" >/dev/null 2>&1; then
+        ok "$c"
+    else
+        bad "$c ★ 缺 → pkg install $c"
+    fi
+done
+
+echo
+echo "[3] Python 库"
+REPY_ROOT="$RE_ROOT" python3 - > /tmp/.doctor_py 2>/dev/null <<'PY'
+import os, sys, importlib
+root = os.environ['REPY_ROOT']
+sys.path.insert(0, os.path.join(root, 'pymods'))
+mods = [
+    ('unicorn',                         'CPU 模拟执行'),
+    ('capstone',                        '反汇编'),
+    ('keystone',                        '汇编'),
+    ('lief',                            'ELF/DEX 修补'),
+    ('elftools',                        'ELF 解析'),
+    ('androguard.core.dex',             'dex 解析'),
+    ('r2pipe',                          '控制 radare2'),
+    ('Crypto.Cipher.AES',               'AES 加解密'),
+    ('cryptography.hazmat.primitives',  '证书'),
+    ('lxml.etree',                      'XML'),
+    ('yaml',                            'YAML'),
+    ('networkx',                        'CFG'),
+    ('pydot',                           '图导出'),
+]
+for m, d in mods:
+    try:
+        importlib.import_module(m)
+        print(f'OK|{m} {d}')
+    except Exception as e:
+        print(f'FAIL|{m} {d} ({type(e).__name__})')
+PY
+while IFS='|' read -r tag msg; do
+    case "$tag" in
+        OK)   ok "$msg" ;;
+        FAIL) bad "$msg" ;;
+    esac
+done < /tmp/.doctor_py
+rm -f /tmp/.doctor_py
+
+echo
+echo "[4] 功能实测"
+if "$RE_ROOT/bin/r2" -qc "Lc" - 2>/dev/null | grep -q r2dec; then
+    ok "r2dec 插件（pdd 反编译可用）"
+else
+    bad "r2dec 插件未注册"
+fi
+
+if "$RE_ROOT/bin/repy" -c '
+import keystone
+ks = keystone.Ks(keystone.KS_ARCH_ARM64, keystone.KS_MODE_LITTLE_ENDIAN)
+e, _ = ks.asm("mov x0, #1")
+assert bytes(e).hex() == "200080d2"
+' 2>/dev/null; then
+    ok "keystone 汇编正确"
+else
+    bad "keystone 汇编失败"
+fi
+
+if "$RE_ROOT/bin/repy" -c "
+import lief
+b = lief.ELF.parse('$RE_ROOT/radare2/lib/libr_core.so')
+assert len(b.sections) > 5
+" 2>/dev/null; then
+    ok "lief 解析 ELF"
+else
+    bad "lief 解析 ELF 失败"
+fi
+
+if "$RE_ROOT/bin/jadx" --version >/dev/null 2>&1; then
+    ok "jadx 可启动"
+else
+    bad "jadx 启动失败"
+fi
+
+echo
+echo "=== $PASS 通过 / $FAIL 失败 ==="
+[ "$FAIL" -eq 0 ]

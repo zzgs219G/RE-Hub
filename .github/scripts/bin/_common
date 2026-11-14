@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# _common — 被其他脚本 source，算出安装根目录
+#
+# 为什么用 readlink -f：解压到任何路径都能正确解析，
+# 不写死 /data/data/com.termux/files/home/xxx。
+_SELF="$(readlink -f "$0")"
+RE_ROOT="$(cd "$(dirname "$_SELF")/.." && pwd)"
