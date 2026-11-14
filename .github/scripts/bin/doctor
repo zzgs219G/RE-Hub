@@ -35,7 +35,7 @@ done
 
 echo
 echo "[3] Python 库"
-REPY_ROOT="$RE_ROOT" python3 - > /tmp/.doctor_py 2>/dev/null <<'PY'
+REPY_ROOT="$RE_ROOT" python3 - > "${TMPDIR:-$RE_ROOT}/.doctor_py" 2>/dev/null <<'PY'
 import os, sys, importlib
 root = os.environ['REPY_ROOT']
 sys.path.insert(0, os.path.join(root, 'pymods'))
@@ -66,8 +66,8 @@ while IFS='|' read -r tag msg; do
         OK)   ok "$msg" ;;
         FAIL) bad "$msg" ;;
     esac
-done < /tmp/.doctor_py
-rm -f /tmp/.doctor_py
+done < "${TMPDIR:-$RE_ROOT}/.doctor_py"
+rm -f "${TMPDIR:-$RE_ROOT}/.doctor_py"
 
 echo
 echo "[4] 功能实测"
