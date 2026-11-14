@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            ninja-build cmake zip unzip curl file pkg-config
+            ninja-build cmake zip unzip curl file pkg-config meson
 
       - name: 安装 NDK
         run: |
@@ -210,31 +210,28 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist/re-tools/android-tools
-          key: re-androidtools-37
+          key: re-androidtools-lz-35.0.2
 
-      - name: android-tools（下载 Termux 原生包）
+      - name: android-tools（下载 lzhiyong 静态编译包）
         run: |
           set -euo pipefail
-          # 命中缓存则跳过
-          if [ -x "$OUT/android-tools/aapt" ] && [ -x "$OUT/android-tools/zipalign" ]; then
-              echo "✓ 命中缓存，跳过下载"
-              exit 0
-          fi
-          FILE=$(grep -A20 '^Package: android-tools$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
-          test -n "$FILE" || { echo "✗ 索引里找不到 android-tools"; exit 1; }
-          curl -fsSL -o /tmp/at.deb "$TERMUX_POOL/$FILE"
-          python3 .github/scripts/extract-deb.py /tmp/at.deb /tmp/atext
-          USR=$(find /tmp/atext -type d -path '*com.termux/files/usr' | head -1)
-          test -n "$USR" || { echo "✗ 解包失败"; exit 1; }
-          for b in aapt aapt2 zipalign adb dexdump; do
-            if [ -f "$USR/bin/$b" ]; then
-              cp "$USR/bin/$b" "$OUT/android-tools/"
-              echo "  + $b"
-            fi
+          # 用 lzhiyong/android-sdk-tools 的静态编译版：
+          # aapt/aapt2/zipalign/adb 全静态链接，无运行时依赖。
+          # （Termux 的 android-tools 包只有 adb；aapt 在独立包里且依赖
+          #   abseil-cpp/libprotobuf 等一长串运行时库。）
+          V=35.0.2
+          curl -fsSL -o /tmp/sdktools.zip \
+            "https://github.com/lzhiyong/android-sdk-tools/releases/download/${V}/android-sdk-tools-static-aarch64.zip"
+          cd /tmp && rm -rf sdkext && mkdir sdkext && cd sdkext
+          unzip -q /tmp/sdktools.zip
+          ls build-tools platform-tools 2>/dev/null | head
+          for b in aapt aapt2 zipalign dexdump; do
+            [ -f "build-tools/$b" ] && cp "build-tools/$b" "$OUT/android-tools/" && echo "  + $b"
           done
-          # aapt/aapt2 依赖 libc++_shared.so
-          cp -a "$USR"/lib/libc++_shared.so* "$OUT/android-tools/" 2>/dev/null || true
-          echo "✓ android-tools ($(du -sh "$OUT/android-tools" | cut -f1))"
+          for b in adb fastboot sqlite3; do
+            [ -f "platform-tools/$b" ] && cp "platform-tools/$b" "$OUT/android-tools/" && echo "  + $b"
+          done
+          echo "✓ android-tools（静态版，$(du -sh "$OUT/android-tools" | cut -f1)）"
 
       # ══════════════════════════════════════════════════════
       # 二、Python 库
