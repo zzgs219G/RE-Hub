@@ -606,8 +606,8 @@ jobs:
           # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
           # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
           if meson setup b --backend=ninja --cross-file "$CROSS" \
-               -Dc_args="-I$R2INC" \
-               -Dr2_plugdir="$OUT/radare2/plugins" 2>&1 | tail -15; then
+               -Dc_args="-I$(realpath "$R2INC")" \
+               -Dr2_plugdir="$(realpath "$OUT/radare2/plugins")" 2>&1 | tail -15; then
               ninja -C b 2>&1 | tail -10 || true
           fi
           SO=$(find /tmp/r2dec "$OUT/radare2/plugins" -name 'libcore_pdd*.so' 2>/dev/null | head -1)
