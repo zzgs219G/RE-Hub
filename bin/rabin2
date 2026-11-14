@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/bash
+D="$(cd "$(dirname "$0")/.." && pwd)"
+export LD_LIBRARY_PATH="$D/radare2/lib"
+exec "$D/radare2/bin/rabin2" "$@"

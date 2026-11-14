@@ -1,0 +1,16 @@
+# Python 编译缓存（跨机器无效，且会随 Python 版本变化）
+__pycache__/
+*.py[cod]
+*.so.orig
+
+# 除了这些真正需要用到的预编译模块，其余 .so 都是各库自带的运行时库，
+# 必须提交（否则工具跑不起来）。这里不做忽略。
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db

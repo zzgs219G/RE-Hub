@@ -1,0 +1,13 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# apktool — APK 资源反编译 / 回编译（3.0.3）
+#
+# 用法：
+#   apktool d app.apk -o out/     # 反编译
+#   apktool b out/ -o new.apk     # 回编译
+#
+# ⚠️ 回编译已知限制：AGP 生成的资源名带 "$"（如
+#    drawable/$ic_launcher_foreground__0）时，apktool 3.0.3 会报
+#    "invalid entry name" 而失败。这是 apktool 与 AGP 的不兼容，
+#    不是环境问题。此时只能用 aapt2 + 手工改 resources.arsc。
+D="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec java -Xmx1500m -jar "$D/apktool.jar" "$@"

@@ -1,0 +1,137 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# doctor — 检查这个工具集是否完整可用
+#
+# 为什么需要：这个目录设计成"拷到另一部手机也能用"，但有些东西
+# 搬不动（java、系统 binutils 来自 pkg）。换了手机或重装 Termux 后，
+# 跑一遍这个脚本就知道缺什么、怎么装。
+#
+# 用法：doctor
+set -uo pipefail
+D="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PASS=0; FAIL=0; WARN=0
+ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad()  { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n' "$*"; }
+warn() { WARN=$((WARN+1)); printf '  \033[33m!\033[0m %s\n' "$*"; }
+
+echo "=== 逆向工具自检 ==="
+echo "目录: $D"
+echo
+
+# ── 一、目录内的程序（随文件夹搬走，应该始终在）──
+echo "[1] 自带程序"
+for f in jadx/lib/jadx-1.5.6-all.jar apktool.jar \
+         radare2/bin/r2 radare2/plugins/libcore_pdd.so \
+         android-tools/aapt android-tools/aapt2 android-tools/zipalign; do
+    [ -e "$D/$f" ] && ok "$f" || bad "$f  ★ 缺失"
+done
+
+# ── 二、外部依赖（来自 pkg，不随文件夹走）──
+echo
+echo "[2] 外部依赖（Termux pkg 提供，换手机需重装）"
+check_cmd() {
+    local c="$1" hint="$2"
+    if command -v "$c" >/dev/null 2>&1; then
+        ok "$c ($(command -v "$c"))"
+    else
+        bad "$c  ★ 缺 → $hint"
+    fi
+}
+check_cmd java      "pkg install openjdk-21"
+check_cmd python3   "pkg install python"
+# apksigner 是改 APK 后签名的必需项；android-tools 里没有它
+# （它是 Java 程序，随 build-tools 分发，Termux 上由 pkg 提供）
+check_cmd apksigner "pkg install apksigner"
+# binutils 提供 readelf/nm/objdump/strings，是分析 so 的常用命令
+check_cmd readelf   "pkg install binutils"
+# 注意：zipalign 本目录自带了（android-tools/），不在这里查
+
+# ── 三、Python 库（pymods 里，随文件夹走）──
+echo
+echo "[3] Python 库（pymods/，随文件夹搬走）"
+PYOUT=$(PYTHONPATH="$D/pymods" python3 - <<'PY' 2>/dev/null
+import sys
+sys.path = [p for p in sys.path if 'site-packages' not in p]
+sys.path.insert(0, '/data/data/com.termux/files/home/逆向工具/pymods')
+import importlib
+libs = [
+    ('unicorn',                 'CPU 模拟执行'),
+    ('capstone',                '反汇编'),
+    ('keystone',                '汇编（capstone 的反向）'),
+    ('lief',                    'ELF/DEX 修补'),
+    ('elftools',                'ELF 结构解析'),
+    ('androguard.core.dex',     'dex 解析'),
+    ('androguard.core.apk',     'apk 解析'),
+    ('r2pipe',                  '控制 radare2'),
+    ('Crypto.Cipher.AES',       'AES 加解密'),
+    ('cryptography.hazmat.primitives', '证书/TLS'),
+    ('lxml.etree',              'XML'),
+    ('yaml',                    'YAML'),
+    ('networkx',                'CFG 图'),
+    ('pydot',                   '图导出'),
+]
+bad = 0
+for m, d in libs:
+    try:
+        importlib.import_module(m)
+        print(f'OK|{m:32}|{d}')
+    except Exception as e:
+        print(f'FAIL|{m:32}|{d}  ({type(e).__name__})')
+        bad += 1
+print(f'COUNT|{bad}')
+PY
+)
+if [ -z "$PYOUT" ]; then
+    bad "pymods 无法加载"
+else
+    while IFS='|' read -r tag name desc; do
+        case "$tag" in
+            OK)    ok "$name $desc" ;;
+            FAIL)  bad "$name $desc" ;;
+            COUNT) [ "$name" -eq 0 ] || true ;;
+        esac
+    done <<< "$PYOUT"
+fi
+
+# ── 四、功能实测（不只是看文件在不在）──
+echo
+echo "[4] 功能实测"
+# r2dec 插件是否真的注册
+if "$D/bin/r2" -qc "Lc" - 2>/dev/null | grep -q r2dec; then
+    ok "r2dec 插件已注册（pdd 可用）"
+else
+    bad "r2dec 插件未注册"
+fi
+
+# keystone 能否真的汇编
+if "$D/bin/repy" -c "
+import keystone
+ks = keystone.Ks(keystone.KS_ARCH_ARM64, keystone.KS_MODE_LITTLE_ENDIAN)
+enc,_ = ks.asm('mov x0, #1')
+assert bytes(enc).hex() == '200080d2'
+" 2>/dev/null; then
+    ok "keystone 汇编正确（mov x0,#1 → 200080d2）"
+else
+    bad "keystone 汇编失败"
+fi
+
+# lief 能否解析 ELF
+if "$D/bin/repy" -c "
+import lief
+b = lief.ELF.parse('$D/radare2/lib/libr_core.so')
+assert len(b.sections) > 10
+" 2>/dev/null; then
+    ok "lief 解析 ELF 正常"
+else
+    bad "lief 解析 ELF 失败"
+fi
+
+# jadx 能否启动
+if "$D/bin/jadx" --version >/dev/null 2>&1; then
+    ok "jadx 可启动"
+else
+    warn "jadx 启动失败（可能缺 java）"
+fi
+
+echo
+echo "=== $PASS 通过 / $FAIL 失败 / $WARN 警告 ==="
+[ "$FAIL" -eq 0 ] || exit 1

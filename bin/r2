@@ -1,0 +1,16 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# r2 — radare2（含本目录自带的 r2dec 反编译插件）
+#
+# 为什么要设这两个环境变量：
+#   LD_LIBRARY_PATH    r2 的 libr_*.so 在本目录的 radare2/lib，不在系统目录
+#   R2_LIBR_PLUGINS    r2dec 插件在本目录的 radare2/plugins
+# 两项都指向【本文件夹内】，所以整个 逆向工具/ 拷到另一部手机后照样能用，
+# 不依赖 ~/.local/share/radare2 或 $PREFIX/lib/radare2。
+#
+# 用法：
+#   r2 -qc "aaa; s sym.main; pdd" file.so     # pdd = r2dec 反编译
+#   r2 -qc "aaa; s sym.main; pdf" file.so     # pdf = 反汇编
+D="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+export LD_LIBRARY_PATH="$D/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export R2_LIBR_PLUGINS="$D/radare2/plugins${R2_LIBR_PLUGINS:+:$R2_LIBR_PLUGINS}"
+exec "$D/radare2/bin/r2" "$@"

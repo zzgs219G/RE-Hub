@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# repy — 用本目录内置的 Python 模块运行脚本
+#
+# 为什么需要：~/逆向工具/pymods/ 里放着 unicorn / capstone / androguard /
+# cryptography 等模块的实体拷贝（不是软链接 —— 软链接会让 find/tar/pip 漏掉，
+# 且 pip 升级后直接断链）。直接用 python3 跑脚本时，优先走本目录的版本，
+# 与全局 site-packages 完全无关，搬到别的机器也不会因缺包而失败。
+#
+# 用法：
+#   repy <脚本.py> [参数...]        # 跑一个脚本
+#   repy -c "<代码>"                # 跑一段代码
+#   repy -m <模块> [参数...]        # 跑模块（如 pip）
+#
+# 例：
+#   repy ~/加固分析/tools/emu.py lib.so
+#   repy -c "import unicorn; print(unicorn.__version__)"
+D="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+export PYTHONPATH="$D/pymods${PYTHONPATH:+:$PYTHONPATH}"
+exec /data/data/com.termux/files/usr/bin/python3 "$@"
