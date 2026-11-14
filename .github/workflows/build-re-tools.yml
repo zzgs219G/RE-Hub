@@ -564,7 +564,18 @@ jobs:
         run: |
           set -euo pipefail
           cd /tmp
-          rm -rf r2dec && git clone --depth=1 https://github.com/wargio/r2dec-js r2dec
+          rm -rf r2dec
+          # clone 加重试：CI 到 GitHub 偶发断流（run #13 实测：
+          # clone 打出 "Cloning into" 后即失败退出，无任何错误输出）
+          for attempt in 1 2 3; do
+              if git clone --depth=1 https://github.com/wargio/r2dec-js r2dec; then
+                  break
+              fi
+              echo "  clone 失败，重试 $attempt/3"
+              rm -rf r2dec
+              sleep 10
+              [ "$attempt" = "3" ] && { echo "✗ r2dec clone 三次失败" >&2; exit 1; }
+          done
           cd r2dec
 
           # ⚠️ r2 头文件要自己准备，不能依赖前面步骤的 /tmp 残留：
