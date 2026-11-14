@@ -48,11 +48,13 @@ check_cmd readelf   "pkg install binutils"
 # ── 三、Python 库（pymods 里，随文件夹走）──
 echo
 echo "[3] Python 库（pymods/，随文件夹搬走）"
-PYOUT=$(PYTHONPATH="$D/pymods" python3 - <<'PY' 2>/dev/null
-import sys
+PYOUT=$(PYTHONPATH="$D/pymods" REPY_ROOT="$D" python3 - <<'PY' 2>/dev/null
+import os, sys, importlib
+# 用调用方传入的目录，不写死路径——否则这个脚本只能在自己的机器上用，
+# 克隆到别处会去 import 原目录的库（测试过：真会误判为通过）。
+root = os.environ['REPY_ROOT']
 sys.path = [p for p in sys.path if 'site-packages' not in p]
-sys.path.insert(0, '/data/data/com.termux/files/home/逆向工具/pymods')
-import importlib
+sys.path.insert(0, os.path.join(root, 'pymods'))
 libs = [
     ('unicorn',                 'CPU 模拟执行'),
     ('capstone',                '反汇编'),
