@@ -100,7 +100,19 @@ def patch_main(root: str) -> int:
         return 1
     text = text.replace(old, new, 1)
 
-    # 2) qjsc 改 native
+    # 2) 构建期工具全部改 native
+    #    r2dec 有两个：qjsc（quickjs 编译器）和 modjs_gen（JS 模块清单生成器）
+    old_modjs = """modjs_gen = executable('modjs_gen', 'tools' / 'modjs_gen.c',
+  dependencies: [],"""
+    new_modjs = """modjs_gen = executable('modjs_gen', 'tools' / 'modjs_gen.c',
+  native: true,
+  dependencies: [],"""
+    if old_modjs in text:
+        text = text.replace(old_modjs, new_modjs, 1)
+        print('  ✓ 主 meson.build：modjs_gen 改为 native')
+    else:
+        print('  ⚠ 没匹配到 modjs_gen，跳过（上游可能改版）')
+
     old_qjsc = """qjsc = executable('qjsc', 'tools' / 'qjsc_mod.c',
   dependencies: libquickjs_dep,"""
     new_qjsc = """qjsc = executable('qjsc', 'tools' / 'qjsc_mod.c',
