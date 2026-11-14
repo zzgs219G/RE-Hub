@@ -195,8 +195,17 @@ jobs:
       - name: 纯 Python 库（直接下载）
         run: |
           set -euo pipefail
-          # 无 C 扩展，任何平台都能用，直接 pip 装
-          PURE="androguard r2pipe pyelftools pyyaml networkx pydot asn1crypto click colorama loguru pyasn1 future past apkInspector apkInspectorCLI"
+          # 无 C 扩展，任何平台都能用，直接 pip 装。
+          # ⚠️ 列表里只写【PyPI 上的包名】，不是 import 名：
+          #   past 是 future 包的一部分（不是独立包）
+          #   apkInspectorCLI 是 apkInspector 包的一部分
+          # 实测(run 43612261527)把它们当包名会 404 导致整步失败。
+          #
+          # ⚠️ 用 --no-deps 装就必须自己列全依赖。
+          # androguard 的硬依赖里，dataset 仅用于 session.py 的缓存功能
+          # （核心的 core.dex / core.apk 不需要），ipython 只用于 CLI 交互。
+          # 实测：只装 androguard 本体时 core.dex 能正常 import。
+          PURE="androguard r2pipe pyelftools pyyaml networkx pydot asn1crypto click colorama loguru pyasn1 future apkInspector dataset pygments"
           FAILED=""
           for p in $PURE; do
               if python3 -m pip install --target "$OUT/pymods" --no-deps \
@@ -210,6 +219,12 @@ jobs:
           [ -z "$FAILED" ] || { echo "✗ 以下纯 Python 库下载失败:$FAILED" >&2; exit 1; }
           echo "✓ 共 $(ls "$OUT/pymods" | wc -l) 个条目"
 
+          # 立刻验证能 import —— 防止"装上了但缺依赖"这种隐性故障。
+          # 验证逻辑在 .github/scripts/verify-pymods.py（不内联，
+          # 因为 YAML 里写多行 Python 会破坏缩进结构，实测踩过两次）。
+          echo
+          echo "=== import 验证 ==="
+          python3 "$GITHUB_WORKSPACE/.github/scripts/verify-pymods.py" "$OUT/pymods"
       - name: 设置交叉编译环境
         run: |
           set -euo pipefail
