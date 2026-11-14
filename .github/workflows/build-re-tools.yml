@@ -607,6 +607,7 @@ jobs:
           # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
           if meson setup b --backend=ninja --cross-file "$CROSS" \
                -Dc_args="-I$(realpath "$R2INC")" \
+               -Dr2_libdir="$(realpath "$OUT/radare2/lib")" \
                -Dr2_plugdir="$(realpath "$OUT/radare2/plugins")" 2>&1 | tail -15; then
               ninja -C b 2>&1 | tail -10 || true
           fi
