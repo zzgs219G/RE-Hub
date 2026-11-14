@@ -100,8 +100,13 @@ jobs:
           curl -fsSL -o /tmp/py.deb "$TERMUX_POOL/$FILE"
           ls -lh /tmp/py.deb
           python3 .github/scripts/extract-deb.py /tmp/py.deb "$RUNNER_TEMP/pyext"
-          PYINC=$(find "$RUNNER_TEMP/pyext" -type d -name "python${PYTHON_VERSION}" | head -1)
-          test -n "$PYINC" || { echo "✗ 找不到 python${PYTHON_VERSION} 头文件"; find "$RUNNER_TEMP/pyext" -name pyconfig.h; exit 1; }
+          # ⚠️ 必须找 include/ 下的，不能用 -name "python3.14" 泛搜 ——
+          # 解包树里同时有 lib/python3.14（纯 Python 标准库，无 pyconfig.h）
+          # 和 include/python3.14（头文件）。泛搜会先命中 lib 下的那个，
+          # 然后 pyconfig.h 不存在直接失败（run 43612020875 实测）。
+          PYINC=$(find "$RUNNER_TEMP/pyext" -type d -path "*/include/python${PYTHON_VERSION}" | head -1)
+          [ -n "$PYINC" ] || PYINC=$(find "$RUNNER_TEMP/pyext" -name pyconfig.h -type f 2>/dev/null | head -1 | xargs -r dirname)
+          test -n "$PYINC" || { echo "✗ 找不到 python${PYTHON_VERSION} 头文件"; find "$RUNNER_TEMP/pyext" -name pyconfig.h; echo "--- 目录树:"; find "$RUNNER_TEMP/pyext" -maxdepth 8 -type d -name "python*" | head; exit 1; }
           echo "Python include: $PYINC"
           grep -E '^#define (SIZEOF_LONG|SIZEOF_VOID_P) ' "$PYINC/pyconfig.h" | sed 's/^/  /'
           for k in SIZEOF_LONG SIZEOF_VOID_P; do
