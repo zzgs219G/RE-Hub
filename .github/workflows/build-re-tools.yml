@@ -560,28 +560,23 @@ jobs:
           rm -rf "$OUT/pymods/keystone/__pycache__"
           echo "✓ keystone ($(du -sh "$OUT/pymods/keystone" | cut -f1))"
 
-      - name: r2dec（交叉编译 r2 插件，尽力而为）
+      - name: r2dec（交叉编译 r2 插件）
         run: |
           set -euo pipefail
-          # ⚠️ 这一步【失败不阻塞】：r2dec 只提供 pdd 反编译命令，
-          #    缺了不影响其他工具。
-          #
-          #    交叉编译的固有障碍（2026-11-15 实测多轮）：
-          #      r2dec 构建过程要运行自己编出来的 qjsc（quickjs 编译器），
-          #      它是 ARM 二进制，在 x86_64 的 CI runner 上跑不了。
-          #      理论上可用 qemu-user 代跑，但 Android 二进制需要
-          #      /system/bin/linker64，NDK 里没有（它在系统镜像里），
-          #      qemu-aarch64 报 "Could not open '/system/bin/linker64'"。
-          #      交叉文件加 exe_wrapper 也救不了。
-          #
-          #    要真正拿到 r2dec，只能在 Android 设备上编译，或等上游
-          #    提供 host 侧的 qjsc 预生成产物。
+          # r2dec 的构建流程：编 qjsc（quickjs 编译器）→ 运行 qjsc 生成
+          # bytecode.h → 用它编插件。qjsc 是【构建期工具】，必须用 host
+          # 编译器编成 x86_64 才能在 runner 上执行。
+          # 上游 meson.build 没给 qjsc 标 native: true，所以交叉编译时
+          # 它会被编成 ARM → 构建中途执行失败：
+          #   An exe_wrapper is needed for /tmp/r2dec/b/qjsc
+          # 用 qemu 代跑也不行（Android 二进制要 /system/bin/linker64，
+          # NDK 不提供）。patch-r2dec.py 给 qjsc 加 native: true 解决。
           cd /tmp
           rm -rf r2dec
-          # clone 加重试：CI 到 GitHub 偶发断流（run #13 实测：
-          # clone 打出 "Cloning into" 后即失败退出，无任何错误输出）
+          # --recurse-submodules：libquickjs 是 subproject，要一并拉
           for attempt in 1 2 3; do
-              if git clone --depth=1 https://github.com/wargio/r2dec-js r2dec; then
+              if git clone --depth=1 --recurse-submodules --shallow-submodules \
+                     https://github.com/wargio/r2dec-js r2dec; then
                   break
               fi
               echo "  clone 失败，重试 $attempt/3"
@@ -590,6 +585,10 @@ jobs:
               [ "$attempt" = "3" ] && { echo "✗ r2dec clone 三次失败" >&2; exit 1; }
           done
           cd r2dec
+          # 关键补丁：qjsc 是构建期工具，必须用 host 编译器编，
+          # 详见 .github/scripts/patch-r2dec.py
+          python3 "$GITHUB_WORKSPACE/.github/scripts/patch-r2dec.py" . \
+            || { echo "✗ r2dec 打补丁失败" >&2; exit 1; }
 
           # ⚠️ r2 头文件要自己准备，不能依赖前面步骤的 /tmp 残留：
           #    radare2 命中缓存时其解包步骤被跳过，/tmp/r2ext 不存在
@@ -624,16 +623,15 @@ jobs:
                -Dr2_plugdir="$(realpath "$OUT/radare2/plugins")" 2>&1 | tail -15; then
               ninja -C b 2>&1 | tail -10 || true
           fi
-          SO=$(find /tmp/r2dec "$OUT/radare2/plugins" -name 'libcore_pdd*.so' 2>/dev/null | head -1)
-          if [ -n "$SO" ]; then
-              mkdir -p "$OUT/radare2/plugins"
-              cp "$SO" "$OUT/radare2/plugins/"
-              file "$OUT/radare2/plugins/libcore_pdd.so"
-              echo "✓ r2dec"
-          else
-              echo "⚠ r2dec 编译失败（不影响其他工具，仅缺 pdd 反编译命令）"
-              echo "  这通常意味着 r2dec 与 r2 6.2.6 的 API 不兼容"
-          fi
+          SO=$(find /tmp/r2dec/b "$OUT/radare2/plugins" -name 'libcore_pdd*.so' 2>/dev/null | head -1)
+          test -n "$SO" || { echo "✗ 没产出 libcore_pdd.so" >&2; find /tmp/r2dec -name '*.so' | head; exit 1; }
+          mkdir -p "$OUT/radare2/plugins"
+          cp "$SO" "$OUT/radare2/plugins/libcore_pdd.so"
+          file "$OUT/radare2/plugins/libcore_pdd.so"
+          # 硬校验：必须是 aarch64，否则装到手机上加载不了
+          file "$OUT/radare2/plugins/libcore_pdd.so" | grep -qi aarch64 \
+            || { echo "✗ libcore_pdd.so 不是 aarch64" >&2; exit 1; }
+          echo "✓ r2dec ($(du -h "$OUT/radare2/plugins/libcore_pdd.so" | cut -f1))"
 
       # ══════════════════════════════════════════════════════
       # 四、打包
