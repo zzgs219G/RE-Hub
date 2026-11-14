@@ -587,15 +587,9 @@ jobs:
           CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
           # meson 交叉编译需要 cross file（host machine = aarch64 android）
           CROSS="$RUNNER_TEMP/r2dec-cross.ini"
-          cat > "$CROSS" <<CROSSINI
-          [binaries]
-          c = '$CC'
-          [host_machine]
-          system = 'android'
-          cpu_family = 'aarch64'
-          cpu = 'aarch64'
-          endian = 'little'
-          CROSSINI
+          # ⚠️ 不用 heredoc：YAML run 块里的结束符会被缩进，bash
+          #    永远找不到它，把后面全部行吞进 heredoc（第三次踩坑）。
+          printf '[binaries]\nc = '"'"'%s'"'"'\n[host_machine]\nsystem = '"'"'%s'"'"'\ncpu_family = aarch64\ncpu = aarch64\nendian = little\n' "$CC" android > "$CROSS"
           # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
           # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
           if meson setup b --backend=ninja --cross-file "$CROSS" \
