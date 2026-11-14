@@ -389,7 +389,27 @@ jobs:
               #    上方几百行处，tail -20 会把它切掉，导致只能看到
               #    "returned non-zero exit status 2" 而无法诊断。
               #    让完整日志进 CI 日志（GitHub 会自动折叠）。
-              if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
+              if [ "$p" = "unicorn" ]; then
+                  # unicorn 需要打补丁（NDK 下 cmake 不产出带版本号的
+                  # libunicorn.so.2，setup.py 会 FileNotFoundError），
+                  # 所以走"下载→补丁→本地安装"而不是直接 pip 装。
+                  # 详见 .github/scripts/patch-unicorn.py
+                  SRCDIR="/tmp/src-unicorn"
+                  rm -rf "$SRCDIR" && mkdir -p "$SRCDIR"
+                  if ! python3 -m pip download --no-deps --no-binary :all: \
+                          --no-cache-dir -d "$SRCDIR" unicorn; then
+                      echo "✗ unicorn 源码下载失败" >&2; exit 1
+                  fi
+                  tar xzf "$SRCDIR"/unicorn-*.tar.gz -C "$SRCDIR"
+                  UROOT=$(find "$SRCDIR" -maxdepth 1 -type d -name 'unicorn-*' | head -1)
+                  python3 "$GITHUB_WORKSPACE/.github/scripts/patch-unicorn.py" "$UROOT" \
+                    || { echo "✗ unicorn 打补丁失败" >&2; exit 1; }
+                  if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
+                          --no-cache-dir --no-build-isolation "$UROOT"; then
+                      echo "✗ unicorn 编译失败" >&2
+                      exit 1
+                  fi
+              elif ! python3 -m pip install --target "$OUT/pymods" --no-deps \
                       --no-binary :all: --no-cache-dir "$p"; then
                   echo "✗ $p 编译失败" >&2
                   exit 1
