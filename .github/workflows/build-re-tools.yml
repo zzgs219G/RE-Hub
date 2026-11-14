@@ -409,10 +409,46 @@ jobs:
                       echo "✗ unicorn 编译失败" >&2
                       exit 1
                   fi
-              elif ! python3 -m pip install --target "$OUT/pymods" --no-deps \
-                      --no-binary :all: --no-cache-dir "$p"; then
-                  echo "✗ $p 编译失败" >&2
-                  exit 1
+              elif [ "$p" = "lxml" ]; then
+                  # lxml 依赖目标平台的 libxml2/libxslt（C 库），交叉编译要把
+                  # 整个依赖链（libiconv/libgcrypt/...）都备齐才能编。
+                  # Termux 有现成的 python-lxml 6.1.3（与本机同版本），
+                  # 直接解包拿扩展模块；运行时库放进 radare2/lib
+                  # （repy 已把该目录加入 LD_LIBRARY_PATH）。
+                  echo "  （lxml 走 Termux 预编译包，跳过源码编译）"
+                  .github/scripts/fetch-termux-pkg.py python-lxml "$OUT/pymods"
+                  # site-packages 里的内容要挪到 pymods 顶层
+                  SP=$(find "$OUT/pymods" -type d -name "site-packages" | head -1)
+                  if [ -n "$SP" ]; then
+                      cp -a "$SP"/* "$OUT/pymods/" && rm -rf "$SP"
+                      echo "  ✓ site-packages 内容已并入 pymods/"
+                  fi
+                  mkdir -p "$OUT/radare2/lib"
+                  for pkg in libxml2 libxslt libiconv libgcrypt libgpg-error libandroid-glob; do
+                      .github/scripts/fetch-termux-pkg.py "$pkg" "/tmp/_libs_$pkg"
+                      # 只取 .so 文件放进 radare2/lib
+                      find "/tmp/_libs_$pkg" -name "*.so*" -type f \
+                          -exec cp -a {} "$OUT/radare2/lib/" \; 2>/dev/null || true
+                      echo "  + $pkg"
+                  done
+                  # 建无版本号的符号链接：deb 里的主文件是 libxml2.so.16.1.4，
+                  # 但 lxml 的 .so 链接的是 libxml2.so.16 —— 没有这个链接
+                  # 真机 dlopen 会报 library not found
+                  for f in "$OUT/radare2"/lib*.so.[0-9]*.[0-9]*.[0-9]*; do
+                      [ -e "$f" ] || continue
+                      base="${f%.so.*}"
+                      minor="${f#*.so.}"          # 16.1.4
+                      soname="$base.so.${minor%%.*}"  # libxml2.so.16
+                      [ -e "$soname" ] || { ln -s "$(basename "$f")" "$soname"; echo "  链接: $(basename "$soname") → $(basename "$f")"; }
+                  done
+                  echo "  运行时库: $(ls "$OUT/radare2/lib" | grep -E 'libxml|libxslt|libiconv|libgcrypt|libgpg|glob' | tr '\n' ' ')"
+                  echo "✓ lxml"
+              else
+                  if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
+                          --no-binary :all: --no-cache-dir "$p"; then
+                      echo "✗ $p 编译失败" >&2
+                      exit 1
+                  fi
               fi
               echo "✓ $p"
           done
