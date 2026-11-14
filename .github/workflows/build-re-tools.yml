@@ -465,6 +465,20 @@ jobs:
               echo "✓ $p"
           done
 
+      - name: 清理无用文件（静态库、__pycache__）
+        run: |
+          set -euo pipefail
+          # 静态库只对开发有用，运行时只需要 .so。
+          # unicorn 的 libunicorn.a 有 230MB，占整包体积的一大半
+          # （本机实测：pymods 449M → 191M）。
+          echo "清理前: $(du -sh "$OUT/pymods" | cut -f1)"
+          find "$OUT/pymods" -name '*.a' -type f -print -delete
+          find "$OUT/pymods" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+          find "$OUT/pymods" -name '*.pyc' -delete
+          # 头文件也只在编译期需要
+          find "$OUT/pymods" -maxdepth 2 -type d -name 'include' -exec rm -rf {} + 2>/dev/null || true
+          echo "清理后: $(du -sh "$OUT/pymods" | cut -f1)"
+
       - name: 检查 C 扩展架构
         run: |
           set -euo pipefail
