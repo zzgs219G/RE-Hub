@@ -127,29 +127,66 @@ jobs:
       # ══════════════════════════════════════════════════════
       # 一、直接下载（上游已有现成产物）
       # ══════════════════════════════════════════════════════
+      #
+      # ⚠️ 每个组件都用 actions/cache 缓存产物。
+      # 调试期间这是提速关键：改某一环时，其余环节直接命中缓存跳过，
+      # 一轮从 10 分钟降到 1 分钟。正常发版时缓存也会命中，
+      # 只有当上游版本号变了才重新下载（key 里带版本号）。
+      # 清缓存：Actions 页面 → Caches → 删除对应条目。
+
+      - name: 缓存 jadx
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/jadx
+          key: re-jadx-1.5.6
 
       - name: jadx（下载）
         run: |
           set -euo pipefail
           V=1.5.6
+          if [ -f "$OUT/jadx/lib/jadx-${V}-all.jar" ]; then
+              echo "✓ 命中缓存，跳过下载"
+              exit 0
+          fi
           curl -fsSL -o /tmp/jadx.zip \
             "https://github.com/skylot/jadx/releases/download/v${V}/jadx-${V}.zip"
           unzip -q /tmp/jadx.zip -d "$OUT/jadx"
           test -f "$OUT/jadx/lib/jadx-${V}-all.jar" || { echo "✗ jadx jar 缺失"; ls -R "$OUT/jadx" | head; exit 1; }
           echo "✓ jadx $V ($(du -h "$OUT/jadx/lib/jadx-${V}-all.jar" | cut -f1))"
 
+      - name: 缓存 apktool
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/apktool.jar
+          key: re-apktool-3.0.3
+
       - name: apktool（下载）
         run: |
           set -euo pipefail
           V=3.0.3
+          if [ -s "$OUT/apktool.jar" ]; then
+              echo "✓ 命中缓存，跳过下载"
+              exit 0
+          fi
           curl -fsSL -o "$OUT/apktool.jar" \
             "https://github.com/iBotPeaches/Apktool/releases/download/v${V}/apktool_${V}.jar"
           test -s "$OUT/apktool.jar" || { echo "✗ apktool.jar 下载失败"; exit 1; }
           echo "✓ apktool $V ($(du -h "$OUT/apktool.jar" | cut -f1))"
 
+      - name: 缓存 radare2
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/radare2
+          key: re-r2-6.2.6
+
       - name: radare2（下载 Termux 原生包）
         run: |
           set -euo pipefail
+          # 命中缓存则跳过
+          if [ -x "$OUT/radare2/bin/r2" ] && [ -d "$OUT/radare2/lib" ]; then
+              echo "✓ 命中缓存，跳过下载"
+              exit 0
+          fi
           # 不从源码编：radare2 含 23 个 so + 数据文件，
           # 交叉编译耗时长且依赖复杂。Termux 官方包是 aarch64 且已验证。
           FILE=$(grep -A20 '^Package: radare2$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
@@ -169,9 +206,20 @@ jobs:
           echo "  库文件: $(ls "$OUT/radare2/lib" | wc -l) 个"
           echo "✓ radare2 $VER ($(du -sh "$OUT/radare2" | cut -f1))"
 
+      - name: 缓存 android-tools
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/android-tools
+          key: re-androidtools-37
+
       - name: android-tools（下载 Termux 原生包）
         run: |
           set -euo pipefail
+          # 命中缓存则跳过
+          if [ -x "$OUT/android-tools/aapt" ] && [ -x "$OUT/android-tools/zipalign" ]; then
+              echo "✓ 命中缓存，跳过下载"
+              exit 0
+          fi
           FILE=$(grep -A20 '^Package: android-tools$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
           test -n "$FILE" || { echo "✗ 索引里找不到 android-tools"; exit 1; }
           curl -fsSL -o /tmp/at.deb "$TERMUX_POOL/$FILE"
@@ -191,6 +239,36 @@ jobs:
       # ══════════════════════════════════════════════════════
       # 二、Python 库
       # ══════════════════════════════════════════════════════
+
+      - name: 缓存纯 Python 库
+        uses: actions/cache@v4
+        with:
+          # 只缓存这些库自己的目录，不缓存整个 pymods ——
+          # 整个缓存会掩盖 C 扩展步骤的问题（缓存键不同但目录重叠）
+          path: |
+            dist/re-tools/pymods/androguard
+            dist/re-tools/pymods/r2pipe
+            dist/re-tools/pymods/elftools
+            dist/re-tools/pymods/yaml
+            dist/re-tools/pymods/networkx
+            dist/re-tools/pymods/pydot
+            dist/re-tools/pymods/asn1crypto
+            dist/re-tools/pymods/click
+            dist/re-tools/pymods/colorama
+            dist/re-tools/pymods/loguru
+            dist/re-tools/pymods/pyasn1
+            dist/re-tools/pymods/future
+            dist/re-tools/pymods/past
+            dist/re-tools/pymods/apkInspector
+            dist/re-tools/pymods/apkInspectorCLI
+            dist/re-tools/pymods/dataset
+            dist/re-tools/pymods/pygments
+            dist/re-tools/pymods/alembic
+            dist/re-tools/pymods/sqlalchemy
+            dist/re-tools/pymods/mako
+            dist/re-tools/pymods/typing_extensions
+            dist/re-tools/pymods/greenlet
+          key: re-purepy-2026-11-15
 
       - name: 纯 Python 库（直接下载）
         run: |
@@ -250,12 +328,38 @@ jobs:
           echo "✓ 交叉编译环境就绪"
           echo "  CC=$CC"
 
+      - name: 缓存 C 扩展编译结果
+        uses: actions/cache@v4
+        with:
+          path: |
+            dist/re-tools/pymods/unicorn
+            dist/re-tools/pymods/capstone
+            dist/re-tools/pymods/Crypto
+            dist/re-tools/pymods/lxml
+          key: re-cext-py${{ env.PYTHON_VERSION }}-api${{ env.ANDROID_API }}-v1
+
       - name: C 扩展库（交叉编译）
         run: |
           set -euo pipefail
           # 这几个在 PyPI 上没有 Android wheel，必须从源码编译。
           # 逐个来，任何一个失败立即报错——缺了就说明工具集不完整。
+          #
+          # 每个库单独判断缓存：已存在就跳过。这样某个库编译失败时，
+          # 修好后重跑只编那一个，不用等全部重来。
+          # 目录名与 pip 的 import 名不同，见下方映射。
+          declare -A DIRS=(
+            [unicorn]=unicorn
+            [capstone]=capstone
+            [pycryptodome]=Crypto
+            [lxml]=lxml
+          )
           for p in unicorn capstone pycryptodome lxml; do
+              d="${DIRS[$p]}"
+              # 判断是否已有编译产物（有 .so 才算）
+              if find "$OUT/pymods/$d" -name '*.so' -type f 2>/dev/null | grep -q .; then
+                  echo "✓ $p（命中缓存，跳过编译）"
+                  continue
+              fi
               echo "════ $p ════"
               if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
                       --no-binary :all: --no-cache-dir "$p" 2>&1 | tail -20; then
@@ -288,9 +392,20 @@ jobs:
       # 三、两个特殊库
       # ══════════════════════════════════════════════════════
 
+      - name: 缓存 lief
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/pymods/lief
+          key: re-lief-0.17.6
+
       - name: lief（下载已构建产物）
         run: |
           set -euo pipefail
+          # 命中缓存则跳过
+          if find "$OUT/pymods/lief" -name '_lief*.so' 2>/dev/null | grep -q .; then
+              echo "✓ 命中缓存，跳过"
+              exit 0
+          fi
           # PyPI 的 lief sdist 是 mock 包（7.8KB，src/ 被剔除），
           # 无法从 pip 构建。已有现成产物，直接下载。
           URL="https://github.com/zzgs219G/termux-build/releases/download/v2/lief-py3.14-android-arm64.tar.gz"
@@ -305,9 +420,20 @@ jobs:
           file "$SO" | grep -qi aarch64 || { echo "✗ lief 不是 aarch64" >&2; exit 1; }
           echo "✓ lief ($(du -sh "$OUT/pymods/lief" | cut -f1))"
 
+      - name: 缓存 keystone
+        uses: actions/cache@v4
+        with:
+          path: dist/re-tools/pymods/keystone
+          key: re-keystone-0.9.2-py${{ env.PYTHON_VERSION }}
+
       - name: keystone（打补丁后交叉编译）
         run: |
           set -euo pipefail
+          # 命中缓存则跳过（有 libkeystone.so 才算完整）
+          if [ -f "$OUT/pymods/keystone/libkeystone.so" ]; then
+              echo "✓ 命中缓存，跳过编译"
+              exit 0
+          fi
           # PyPI 的 sdist 用了已废弃的 CMP0051 策略，新版 CMake 拒绝。
           # 补丁脚本见 .github/scripts/patch-keystone.py
           cd /tmp
