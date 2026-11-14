@@ -585,6 +585,10 @@ jobs:
               [ "$attempt" = "3" ] && { echo "✗ r2dec clone 三次失败" >&2; exit 1; }
           done
           cd r2dec
+          # 补丁要改 subprojects/libquickjs/meson.build，先把 submodule 拉全
+          meson subprojects download 2>&1 | tail -2 || true
+          test -f subprojects/libquickjs/meson.build \
+            || { echo "✗ libquickjs subproject 未就位" >&2; exit 1; }
           # 关键补丁：qjsc 是构建期工具，必须用 host 编译器编，
           # 详见 .github/scripts/patch-r2dec.py
           python3 "$GITHUB_WORKSPACE/.github/scripts/patch-r2dec.py" . \

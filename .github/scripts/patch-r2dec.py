@@ -3,72 +3,116 @@
 
 用法: patch-r2dec.py <r2dec 源码根目录>
 
-问题：
-  r2dec 的构建流程是「编 qjsc（quickjs 编译器工具）→ 运行 qjsc 生成
-  bytecode.h → 用该头文件编插件」。
+## 问题
 
-  交叉编译时 meson 默认把 qjsc 也按 target 架构编（ARM），
-  于是构建中途执行 qjsc 这一步在 x86_64 的 CI runner 上失败：
-      An exe_wrapper is needed for /tmp/r2dec/b/qjsc
-  用 qemu 代跑也不行——NDK 的 Android 二进制依赖 /system/bin/linker64，
-  该文件在系统镜像里，NDK sysroot 不含它。
+r2dec 的构建流程：
+  编译 qjsc（quickjs 编译器工具）→ 运行它生成 bytecode.h → 编译插件
 
-修法：
-  meson 支持为构建期工具单独指定 native 编译。
-  给 qjsc 加 native: true，它就会用 host 编译器（runner 的 gcc/clang）
-  编成 x86_64 并直接执行。
-  同时要让它依赖的 quickjs 库也走 native，否则链接的是 ARM 版静态库。
+qjsc 是【构建期工具】，必须在构建机上能跑。交叉编译时 meson 把它也按
+target 架构（ARM）编，构建中途执行就失败：
+    An exe_wrapper is needed for /tmp/r2dec/b/qjsc
+qemu 代跑也不行：Android 二进制依赖 /system/bin/linker64，
+该文件在系统镜像里，NDK sysroot 不含。
 
-  注意：libquickjs 是 subproject，需要单独拿一份 native 构建的
-  quickjs_dep。meson 的 subproject fallback 支持 native: true 参数。
+## 修法（以及踩过的两个坑）
+
+坑 1：subproject(..., native: true) → meson 报 unknown keyword。
+坑 2：主项目直接 files('subprojects/libquickjs/cutils.c')
+     → meson 报 Sandbox violation，不容许跨 subproject 取文件。
+
+正确做法：改【子项目】的 meson.build，让它同时产出 target 版和 native
+版两个库/依赖，再在主项目里取用。这是 meson 官方支持的 subproject
+内部建模方式。
 """
 import os
-import re
 import sys
 
 MARK = '# [patched by patch-r2dec.py]'
 
 
-def patch_meson_build(root: str) -> int:
+def patch_quickjs_subproject(root: str) -> int:
+    """在 libquickjs 子项目里增加 native 版 quickjs 库"""
+    path = os.path.join(root, 'subprojects', 'libquickjs', 'meson.build')
+    if not os.path.isfile(path):
+        print(f'✗ 找不到 {path}（submodule 没拉下来？）', file=sys.stderr)
+        return 1
+    text = open(path, encoding='utf-8', errors='replace').read()
+    if MARK in text:
+        print('  libquickjs 已打过补丁，跳过')
+        return 0
+
+    # 在 quickjs_dep = declare_dependency(...) 之后插入 native 版本
+    anchor = """quickjs_dep = declare_dependency(
+  link_with: quickjs,
+  include_directories: include_directories('.'),
+)"""
+    if anchor not in text:
+        print('  ✗ libquickjs/meson.build 里没找到 quickjs_dep 定义', file=sys.stderr)
+        return 1
+
+    extra = anchor + f"""
+
+{MARK}
+# ── native 版本：给构建期工具（qjsc）用 ──────────────────────────
+# 交叉编译时 qjsc 必须在构建机上运行，所以它依赖的库也得用 host 编译器。
+# meson 不允许主项目跨 subproject 取源文件（Sandbox violation），
+# 因此 native 库必须在这里、即子项目内部定义并导出。
+_native_cc = meson.get_compiler('c', native: true)
+quickjs_native = static_library('quickjs_native', sources,
+  native: true,
+  dependencies: [atomic_dep, threads_dep, dl_dep, m_dep],
+  c_args: _native_cc.get_supported_arguments(
+    '-D_GNU_SOURCE', '-DCONFIG_BIGNUM', '-funsigned-char',
+  ),
+  pic: true,
+  gnu_symbol_visibility: 'hidden',
+  implicit_include_directories: false,
+  install: false,
+)
+quickjs_dep_native = declare_dependency(
+  link_with: quickjs_native,
+  include_directories: include_directories('.'),
+)
+"""
+    open(path, 'w', encoding='utf-8').write(text.replace(anchor, extra, 1))
+    print('  ✓ libquickjs/meson.build 增加 native 库')
+    return 0
+
+
+def patch_main(root: str) -> int:
     path = os.path.join(root, 'meson.build')
     if not os.path.isfile(path):
         print(f'✗ 找不到 {path}', file=sys.stderr)
         return 1
     text = open(path, encoding='utf-8', errors='replace').read()
-
     if MARK in text:
-        print('  已打过补丁，跳过')
+        print('  主项目已打过补丁，跳过')
         return 0
 
-    # 1) subproject 增加 native 版本（给 qjsc 用）
-    old_sub = "libquickjs_proj = subproject('libquickjs', default_options: ['default_library=static'])"
-    new_sub = (
-        "# [patched by patch-r2dec.py] 交叉编译时 qjsc 必须用 host 编译器编，\n"
-        "# 否则它会被编成 target 架构，构建中途无法执行。\n"
-        "libquickjs_proj_native = subproject('libquickjs',\n"
-        "  default_options: ['default_library=static'], native: true)\n"
-        "libquickjs_dep_native = libquickjs_proj_native.get_variable('quickjs_dep')\n"
-        "\n"
-        + old_sub
-    )
-    if old_sub not in text:
-        print('  ✗ 没匹配到 subproject 调用，上游可能改版', file=sys.stderr)
+    # 1) 取 native dep
+    old = "libquickjs_dep = libquickjs_proj.get_variable('quickjs_dep')"
+    new = (old + "\n"
+           + MARK + "\n"
+           "# 构建期工具（qjsc）用 native 版，见 patch-r2dec.py 说明\n"
+           "libquickjs_dep_native = libquickjs_proj.get_variable('quickjs_dep_native')")
+    if old not in text:
+        print('  ✗ 没匹配到 get_variable(quickjs_dep)', file=sys.stderr)
         return 1
-    text = text.replace(old_sub, new_sub, 1)
+    text = text.replace(old, new, 1)
 
-    # 2) qjsc 用 native 编译
+    # 2) qjsc 改 native
     old_qjsc = """qjsc = executable('qjsc', 'tools' / 'qjsc_mod.c',
   dependencies: libquickjs_dep,"""
     new_qjsc = """qjsc = executable('qjsc', 'tools' / 'qjsc_mod.c',
   native: true,
   dependencies: libquickjs_dep_native,"""
     if old_qjsc not in text:
-        print('  ✗ 没匹配到 qjsc 定义，上游可能改版', file=sys.stderr)
+        print('  ✗ 没匹配到 qjsc 定义', file=sys.stderr)
         return 1
     text = text.replace(old_qjsc, new_qjsc, 1)
 
     open(path, 'w', encoding='utf-8').write(text)
-    print('  ✓ meson.build 已改：qjsc 走 native 编译')
+    print('  ✓ 主 meson.build：qjsc 改为 native')
     return 0
 
 
@@ -76,7 +120,11 @@ def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
-    return patch_meson_build(sys.argv[1])
+    root = sys.argv[1]
+    rc = patch_quickjs_subproject(root)
+    if rc != 0:
+        return rc
+    return patch_main(root)
 
 
 if __name__ == '__main__':
