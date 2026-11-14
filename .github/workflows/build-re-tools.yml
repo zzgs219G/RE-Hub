@@ -309,6 +309,33 @@ jobs:
           AR="$TOOLCHAIN/bin/llvm-ar"
           SYSROOT="$TOOLCHAIN/sysroot"
           test -x "$CC" || { echo "✗ 找不到交叉编译器: $CC"; exit 1; }
+
+          # ── cmake wrapper ─────────────────────────────────────
+          # 为什么需要：unicorn 的 setup.py 直接 subprocess 调
+          #   ['cmake', '-B', ...]（setup.py:123-126），不读 CMAKE_ARGS，
+          #   也不透传 CC 之外的工具链参数。cmake 虽然会读 CC 环境变量，
+          #   但 NDK 交叉编译还需要 toolchain file（sysroot/stl 等），
+          #   只换 CC 不够，编到一半会因为找不到头文件/符号失败
+          #   （实测 run 43614947895：cmake --build 退出码 2）。
+          # 解法：造一个 cmake 包装脚本放在 PATH 最前面，
+          #   首次配置时自动注入 toolchain file，后续 --build 原样透传。
+          WRAPDIR="$RUNNER_TEMP/cmakewrap"
+          mkdir -p "$WRAPDIR"
+          cat > "$WRAPDIR/cmake" <<WRAP
+          #!/bin/bash
+          # 首次配置（有 -S 但没有 TOOLCHAIN 参数）时注入 NDK toolchain
+          if [[ " \$*" == *"-S "* ]] && [[ " \$*" != *"CMAKE_TOOLCHAIN_FILE"* ]]; then
+              exec /usr/bin/cmake "\$@" \\
+                  -DCMAKE_TOOLCHAIN_FILE=$NDK_DIR/build/cmake/android.toolchain.cmake \\
+                  -DANDROID_ABI=arm64-v8a \\
+                  -DANDROID_PLATFORM=android-$ANDROID_API
+          fi
+          exec /usr/bin/cmake "\$@"
+          WRAP
+          chmod +x "$WRAPDIR/cmake"
+          # 验证 wrapper 语法（不能等到编译时才发现写错）
+          bash -n "$WRAPDIR/cmake" || { echo "✗ cmake wrapper 语法错误"; exit 1; }
+
           {
             echo "_PYTHON_HOST_PLATFORM=linux-aarch64"
             echo "CC=$CC"
@@ -320,9 +347,9 @@ jobs:
             echo "CFLAGS=-I$PYINC -fPIC -O2"
             echo "CXXFLAGS=-I$PYINC -fPIC -O2"
             echo "LDFLAGS=--sysroot=$SYSROOT -L$SYSROOT/usr/lib/aarch64-linux-android/$ANDROID_API"
-            echo "PATH=$TOOLCHAIN/bin:$PATH"
+            echo "PATH=$WRAPDIR:$TOOLCHAIN/bin:$PATH"
           } >> "$GITHUB_ENV"
-          echo "✓ 交叉编译环境就绪"
+          echo "✓ 交叉编译环境就绪（含 cmake wrapper）"
           echo "  CC=$CC"
 
       - name: 缓存 C 扩展编译结果
@@ -358,8 +385,12 @@ jobs:
                   continue
               fi
               echo "════ $p ════"
+              # ⚠️ 不用 tail 截断输出：unicorn 的 cmake 错误在 traceback
+              #    上方几百行处，tail -20 会把它切掉，导致只能看到
+              #    "returned non-zero exit status 2" 而无法诊断。
+              #    让完整日志进 CI 日志（GitHub 会自动折叠）。
               if ! python3 -m pip install --target "$OUT/pymods" --no-deps \
-                      --no-binary :all: --no-cache-dir "$p" 2>&1 | tail -20; then
+                      --no-binary :all: --no-cache-dir "$p"; then
                   echo "✗ $p 编译失败" >&2
                   exit 1
               fi
