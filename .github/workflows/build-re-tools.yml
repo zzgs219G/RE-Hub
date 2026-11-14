@@ -581,14 +581,17 @@ jobs:
           # ⚠️ r2 头文件要自己准备，不能依赖前面步骤的 /tmp 残留：
           #    radare2 命中缓存时其解包步骤被跳过，/tmp/r2ext 不存在
           #    （run #11 实测）。这里检测到没有就重新解包一次。
-          R2INC=$(find /tmp/r2ext -type d -name libr 2>/dev/null | head -1)
+          # ⚠️ find 无匹配时退出码非 0，set -e 下赋值语句直接退出脚本
+          #    （run #14 实测：clone 成功后无输出即退出，重试逻辑根本
+          #    没执行到）。stderr 已被吞所以看起来像 clone 挂了。
+          R2INC=$(find /tmp/r2ext -type d -name libr 2>/dev/null | head -1 || true)
           if [ -z "$R2INC" ]; then
               echo "（radare2 解包不存在，重新下载头文件）"
               FILE=$(grep -A20 '^Package: radare2$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
               test -n "$FILE" || { echo "✗ 索引里找不到 radare2"; exit 1; }
               curl -fsSL -o /tmp/r2hdr.deb "$TERMUX_POOL/$FILE"
               python3 "$GITHUB_WORKSPACE/.github/scripts/extract-deb.py" /tmp/r2hdr.deb /tmp/r2ext
-              R2INC=$(find /tmp/r2ext -type d -name libr | head -1)
+              R2INC=$(find /tmp/r2ext -type d -name libr | head -1 || true)
           fi
           test -n "$R2INC" || { echo "✗ 找不到 radare2 头文件（r2dec 编译需要）"; exit 1; }
           echo "r2 include: $R2INC"
