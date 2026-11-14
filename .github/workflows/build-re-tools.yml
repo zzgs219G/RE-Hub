@@ -566,22 +566,46 @@ jobs:
           cd /tmp
           rm -rf r2dec && git clone --depth=1 https://github.com/wargio/r2dec-js r2dec
           cd r2dec
-          R2INC=$(find /tmp/r2ext -type d -name libr | head -1)
+
+          # ⚠️ r2 头文件要自己准备，不能依赖前面步骤的 /tmp 残留：
+          #    radare2 命中缓存时其解包步骤被跳过，/tmp/r2ext 不存在
+          #    （run #11 实测）。这里检测到没有就重新解包一次。
+          R2INC=$(find /tmp/r2ext -type d -name libr 2>/dev/null | head -1)
+          if [ -z "$R2INC" ]; then
+              echo "（radare2 解包不存在，重新下载头文件）"
+              FILE=$(grep -A20 '^Package: radare2$' /tmp/Packages | grep '^Filename:' | head -1 | awk '{print $2}')
+              test -n "$FILE" || { echo "✗ 索引里找不到 radare2"; exit 1; }
+              curl -fsSL -o /tmp/r2hdr.deb "$TERMUX_POOL/$FILE"
+              python3 "$GITHUB_WORKSPACE/.github/scripts/extract-deb.py" /tmp/r2hdr.deb /tmp/r2ext
+              R2INC=$(find /tmp/r2ext -type d -name libr | head -1)
+          fi
           test -n "$R2INC" || { echo "✗ 找不到 radare2 头文件（r2dec 编译需要）"; exit 1; }
           echo "r2 include: $R2INC"
-          # r2dec 是 r2 的插件，必须用【目标平台】的 r2 头文件编译，
-          # 但 meson 需要能运行 r2 来探测版本 —— 这里直接注入路径绕过。
+
+          # 交叉编译：r2dec 是 r2 的插件，目标平台是 Android arm64，
+          # 编译时要用 NDK 的 clang + r2 的头文件。
           CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
-          meson setup b --backend=ninja \
-            --cross-file /dev/null 2>/dev/null || true
+          # meson 交叉编译需要 cross file（host machine = aarch64 android）
+          CROSS="$RUNNER_TEMP/r2dec-cross.ini"
+          cat > "$CROSS" <<CROSSINI
+          [binaries]
+          c = '$CC'
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+          CROSSINI
           # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
-          if meson setup b --backend=ninja \
+          # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
+          if meson setup b --backend=ninja --cross-file "$CROSS" \
                -Dc_args="-I$R2INC" \
                -Dr2_plugdir="$OUT/radare2/plugins" 2>&1 | tail -15; then
               ninja -C b 2>&1 | tail -10 || true
           fi
           SO=$(find /tmp/r2dec "$OUT/radare2/plugins" -name 'libcore_pdd*.so' 2>/dev/null | head -1)
           if [ -n "$SO" ]; then
+              mkdir -p "$OUT/radare2/plugins"
               cp "$SO" "$OUT/radare2/plugins/"
               file "$OUT/radare2/plugins/libcore_pdd.so"
               echo "✓ r2dec"
