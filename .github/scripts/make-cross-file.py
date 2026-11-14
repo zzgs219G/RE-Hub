@@ -41,6 +41,12 @@ needs_exe_wrapper = true
     if sysroot:
         content += f"c_args = ['-I{sysroot}/usr/include']\n"
 
+    # 交叉编译时 meson 会尝试运行编译期工具（如 quickjs 的 qjsc），
+    # 它们被编成了 ARM 的可执行文件，runner 上跑不了。
+    # qemu-aarch64-static 可以直接运行 ARM 二进制，作为 exe_wrapper。
+    if '--with-qemu' in sys.argv:
+        content = content.replace('[binaries]',
+                                  "[binaries]\nexe_wrapper = 'qemu-aarch64-static'")
     with open(out, 'w', encoding='utf-8') as f:
         f.write(content)
     print(f'✓ cross file: {out}')
