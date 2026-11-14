@@ -416,7 +416,7 @@ jobs:
                   # 直接解包拿扩展模块；运行时库放进 radare2/lib
                   # （repy 已把该目录加入 LD_LIBRARY_PATH）。
                   echo "  （lxml 走 Termux 预编译包，跳过源码编译）"
-                  .github/scripts/fetch-termux-pkg.py python-lxml "$OUT/pymods"
+                  python3 .github/scripts/fetch-termux-pkg.py python-lxml "$OUT/pymods"
                   # site-packages 里的内容要挪到 pymods 顶层
                   SP=$(find "$OUT/pymods" -type d -name "site-packages" | head -1)
                   if [ -n "$SP" ]; then
@@ -425,7 +425,7 @@ jobs:
                   fi
                   mkdir -p "$OUT/radare2/lib"
                   for pkg in libxml2 libxslt libiconv libgcrypt libgpg-error libandroid-glob; do
-                      .github/scripts/fetch-termux-pkg.py "$pkg" "/tmp/_libs_$pkg"
+                      python3 .github/scripts/fetch-termux-pkg.py "$pkg" "/tmp/_libs_$pkg"
                       # 只取 .so 文件放进 radare2/lib
                       find "/tmp/_libs_$pkg" -name "*.so*" -type f \
                           -exec cp -a {} "$OUT/radare2/lib/" \; 2>/dev/null || true
