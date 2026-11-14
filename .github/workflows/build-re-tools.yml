@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            ninja-build cmake zip unzip curl file pkg-config meson qemu-user
+            ninja-build cmake zip unzip curl file pkg-config meson
 
       - name: 安装 NDK
         run: |
@@ -560,9 +560,22 @@ jobs:
           rm -rf "$OUT/pymods/keystone/__pycache__"
           echo "✓ keystone ($(du -sh "$OUT/pymods/keystone" | cut -f1))"
 
-      - name: r2dec（交叉编译 r2 插件）
+      - name: r2dec（交叉编译 r2 插件，尽力而为）
         run: |
           set -euo pipefail
+          # ⚠️ 这一步【失败不阻塞】：r2dec 只提供 pdd 反编译命令，
+          #    缺了不影响其他工具。
+          #
+          #    交叉编译的固有障碍（2026-11-15 实测多轮）：
+          #      r2dec 构建过程要运行自己编出来的 qjsc（quickjs 编译器），
+          #      它是 ARM 二进制，在 x86_64 的 CI runner 上跑不了。
+          #      理论上可用 qemu-user 代跑，但 Android 二进制需要
+          #      /system/bin/linker64，NDK 里没有（它在系统镜像里），
+          #      qemu-aarch64 报 "Could not open '/system/bin/linker64'"。
+          #      交叉文件加 exe_wrapper 也救不了。
+          #
+          #    要真正拿到 r2dec，只能在 Android 设备上编译，或等上游
+          #    提供 host 侧的 qjsc 预生成产物。
           cd /tmp
           rm -rf r2dec
           # clone 加重试：CI 到 GitHub 偶发断流（run #13 实测：
@@ -602,7 +615,7 @@ jobs:
           # cross file 由脚本生成（printf 的转义层次太多，引号总丢，
           # meson 报 "Undefined constant" 就是引号丢了的症状）
           CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
-          python3 "$GITHUB_WORKSPACE/.github/scripts/make-cross-file.py" "$CROSS" "$CC" --with-qemu
+          python3 "$GITHUB_WORKSPACE/.github/scripts/make-cross-file.py" "$CROSS" "$CC"
           # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
           # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
           if meson setup b --backend=ninja --cross-file "$CROSS" \

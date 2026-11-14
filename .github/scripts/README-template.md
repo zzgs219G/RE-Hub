@@ -37,7 +37,7 @@ pkg install openjdk-21 python apksigner
 | `bin/` | 命令入口（9 个） |
 | `jadx/` | dex/apk → Java 反编译器 1.5.6 |
 | `pymods/` | Python 库（13 个主库 + 依赖） |
-| `radare2/` | 二进制分析 6.2.6（含 r2dec 插件） |
+| `radare2/` | 二进制分析 6.2.6 |
 | `android-tools/` | aapt/aapt2/zipalign/adb |
 | `apktool.jar` | 资源反编译/回编译 3.0.3 |
 
@@ -47,7 +47,7 @@ pkg install openjdk-21 python apksigner
 |---|---|
 | `jadx` | dex/apk → Java 源码（只读分析） |
 | `apktool` | 资源反编译 + 回编译（改 APK 必需） |
-| `r2` | 交互式二进制分析，`pdd` 反编译 |
+| `r2` | 交互式二进制分析（`pdf` 反汇编；`pdd` 反编译需 r2dec，见下） |
 | `rabin2` | ELF 信息/字符串/导入/符号 |
 | `aapt` `zipalign` `adb` | Android 打包与调试 |
 | `repy` | 用本目录的 Python 库跑脚本 |
@@ -113,6 +113,26 @@ repy myscript.py lib.so
 | jadx / apktool | 上游 GitHub Release |
 | radare2 / android-tools | Termux 官方包（aarch64 原生） |
 | unicorn / capstone / pycryptodome / lxml | 从源码交叉编译 |
-| lief | 已构建产物（PyPI 的 sdist 是空壳，无法从 pip 构建） |
+| lief | 已构建产物（PyPI 的 sdist 是空壳） |
 | keystone | 从源码交叉编译（需给 CMake 打补丁） |
-| r2dec | 从源码交叉编译 |
+| r2dec | **未包含**（交叉编译受限，见"已知限制"） |
+
+## 已知限制
+
+**r2dec 插件（pdd 反编译命令）没有包含。**
+原因：r2dec 构建过程要运行自己编出来的 `qjsc`（quickjs 编译器），
+它是 ARM 二进制，在 x86_64 的 CI runner 上无法执行；用 qemu 代跑也不行
+——Android 二进制需要 `/system/bin/linker64`，NDK 里没有这个文件。
+
+替代方案：
+
+```bash
+r2 -qc "aaa; s sym.main; pdf" lib.so    # 反汇编
+r2 -qc "aaa; s sym.main; pdc" lib.so    # r2 内置伪反编译器
+```
+
+需要完整 r2dec 时，可在 Android 设备上本地编译，或从 r2pm 安装：
+
+```bash
+r2pm -ci r2dec   # 需要设备上有编译工具链
+```

@@ -20,7 +20,9 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     out, cc = sys.argv[1], sys.argv[2]
-    sysroot = sys.argv[3] if len(sys.argv) > 3 else ''
+    sysroot = ''
+    if len(sys.argv) > 3 and not sys.argv[3].startswith('--'):
+        sysroot = sys.argv[3]
 
     content = f"""[binaries]
 c = '{cc}'
