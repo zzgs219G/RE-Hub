@@ -596,14 +596,13 @@ jobs:
           test -n "$R2INC" || { echo "✗ 找不到 radare2 头文件（r2dec 编译需要）"; exit 1; }
           echo "r2 include: $R2INC"
 
-          # 交叉编译：r2dec 是 r2 的插件，目标平台是 Android arm64，
-          # 编译时要用 NDK 的 clang + r2 的头文件。
-          CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          # 交叉编译：r2dec 是 r2 的插件，目标平台是 Android arm64。
           # meson 交叉编译需要 cross file（host machine = aarch64 android）
           CROSS="$RUNNER_TEMP/r2dec-cross.ini"
-          # ⚠️ 不用 heredoc：YAML run 块里的结束符会被缩进，bash
-          #    永远找不到它，把后面全部行吞进 heredoc（第三次踩坑）。
-          printf '[binaries]\nc = '"'"'%s'"'"'\n[host_machine]\nsystem = '"'"'%s'"'"'\ncpu_family = 'aarch64'\ncpu = 'aarch64'\nendian = little\n' "$CC" android > "$CROSS"
+          # cross file 由脚本生成（printf 的转义层次太多，引号总丢，
+          # meson 报 "Undefined constant" 就是引号丢了的症状）
+          CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/make-cross-file.py" "$CROSS" "$CC"
           # r2dec 与 r2 6.2.6 的 API 可能不兼容，失败不阻塞整体构建
           # （本工具集的其他部分都已完成，r2dec 只影响 pdd 反编译命令）
           if meson setup b --backend=ninja --cross-file "$CROSS" \
