@@ -286,6 +286,21 @@ jobs:
           PURE="androguard r2pipe pyelftools pyyaml networkx pydot asn1crypto click colorama loguru pyasn1 future apkInspector dataset pygments"
           FAILED=""
           for p in $PURE; do
+              # ⚠️ pyyaml 带 C 扩展 _yaml：--only-binary 会让 runner 拿
+              # x86_64 的 wheel（run #9 实测：pymods/yaml/_yaml*.so 是
+              # x86_64-linux-gnu）。它必须和其他 C 扩展一样走交叉编译，
+              # 或干脆不带 _yaml（纯 Python 回退完全可用，只是解析慢些）。
+              # 这里选后者：从源码装且禁掉 C 扩展（PYYAML_FORCE_LIBYAML=0）。
+              if [ "$p" = "pyyaml" ]; then
+                  if PYYAML_FORCE_LIBYAML=0 python3 -m pip install --target "$OUT/pymods" --no-deps \
+                         --no-binary :all: --no-cache-dir -q "$p" 2>/dev/null; then
+                      echo "  ✓ $p（纯 Python 模式，不带 _yaml）"
+                  else
+                      echo "  ✗ $p"
+                      FAILED="$FAILED $p"
+                  fi
+                  continue
+              fi
               if python3 -m pip install --target "$OUT/pymods" --no-deps \
                      --only-binary :all: --no-cache-dir -q "$p" 2>/dev/null; then
                   echo "  ✓ $p"
