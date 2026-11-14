@@ -33,15 +33,14 @@ REQUIRED = [
     ('colorama', '终端着色'),
     ('loguru', '日志'),
     ('pyasn1', 'ASN.1'),
-]
-OPTIONAL = [
-    ('lief', 'ELF/DEX 修补'),
-    ('keystone', '汇编'),
-    ('unicorn', 'CPU 模拟'),
-    ('capstone', '反汇编'),
     ('Crypto.Cipher.AES', '加解密'),
     ('cryptography.hazmat.primitives', '证书'),
+    ('unicorn', 'CPU 模拟'),
+    ('capstone', '反汇编'),
+    ('lief', 'ELF/DEX 修补'),
+    ('keystone', '汇编'),
 ]
+OPTIONAL = []   # 最终验证：此时所有库都应就位，没有可选
 
 
 def main() -> int:

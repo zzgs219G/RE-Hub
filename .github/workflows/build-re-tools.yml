@@ -296,13 +296,10 @@ jobs:
           done
           [ -z "$FAILED" ] || { echo "✗ 以下纯 Python 库下载失败:$FAILED" >&2; exit 1; }
           echo "✓ 共 $(ls "$OUT/pymods" | wc -l) 个条目"
-
-          # 立刻验证能 import —— 防止"装上了但缺依赖"这种隐性故障。
-          # 验证逻辑在 .github/scripts/verify-pymods.py（不内联，
-          # 因为 YAML 里写多行 Python 会破坏缩进结构，实测踩过两次）。
-          echo
-          echo "=== import 验证 ==="
-          python3 "$GITHUB_WORKSPACE/.github/scripts/verify-pymods.py" "$OUT/pymods"
+          # ⚠️ 这里不做 import 验证：androguard 依赖 lxml，而 lxml 是
+          # C 扩展，要等后面的交叉编译步骤。在这个位置验证必然失败
+          # （实测 run 43614568368：报 No module named 'lxml'）。
+          # 完整验证在所有库就位之后的"最终验证"步骤。
       - name: 设置交叉编译环境
         run: |
           set -euo pipefail
@@ -497,6 +494,15 @@ jobs:
       # ══════════════════════════════════════════════════════
       # 四、打包
       # ══════════════════════════════════════════════════════
+
+      - name: 最终验证（所有库就位后）
+        run: |
+          set -euo pipefail
+          # 到这里所有组件都已放入，可以完整验证。
+          # 验证逻辑在 .github/scripts/verify-pymods.py（不内联，
+          # 因为 YAML 里写多行 Python 会破坏缩进结构，实测踩过两次）。
+          echo "=== import 验证 ==="
+          python3 "$GITHUB_WORKSPACE/.github/scripts/verify-pymods.py" "$OUT/pymods"
 
       - name: 安装 bin 脚本
         run: |
